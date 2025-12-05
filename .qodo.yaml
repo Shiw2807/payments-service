@@ -1,0 +1,228 @@
+# Qodo Merge Configuration for payments-service
+# Cross-repo analysis configuration for enterprise microservices
+
+version: 1
+
+# Repository metadata
+metadata:
+  name: payments-service
+  type: microservice
+  team: backend
+  language: python
+  framework: fastapi
+
+# Dependencies on other repositories
+dependencies:
+  # Shared utility library
+  - repo: Shiw2807/shared-utils
+    type: library
+    version: "^2.0.0"
+    import_patterns:
+      - "from shared_utils import"
+      - "import shared_utils"
+    tracked_exports:
+      - name: format_currency  # Python naming convention
+        original_name: formatCurrency
+        expected_signature: "format_currency(amount: float, locale: str)"
+        breaking_change_alert: true
+        current_usage: "format_currency(amount)"  # OLD - will break
+      - name: validate_order_total
+        original_name: validateOrderTotal
+        expected_signature: "validate_order_total(total: float)"
+
+# Services that depend on this service (consumers)
+consumers:
+  - repo: Shiw2807/orders-service
+    relationship: provider
+    api_contracts:
+      - endpoint: POST /api/payments/charge
+        method: POST
+        auth_required: false  # BUG: Should be true
+        request_schema:
+          type: object
+          required:
+            - order_id
+            - amount
+            - currency
+            - customer_id
+            - payment_method
+        response_schema:
+          type: object
+          properties:
+            id:
+              type: string
+            status:
+              type: string
+            amount:
+              type: number
+            order_id:
+              type: string
+            
+      - endpoint: POST /api/payments/refund
+        method: POST
+        auth_required: true  # Correctly requires auth
+        
+      - endpoint: GET /api/payments/charges/{charge_id}
+        method: GET
+        auth_required: false
+
+# Cross-repo analysis settings
+cross_repo_analysis:
+  enabled: true
+  check_breaking_changes: true
+  check_api_contracts: true
+  check_dependency_versions: true
+  
+  # Alert when these patterns change
+  watch_patterns:
+    - "src/routes/payments.py"      # API endpoints
+    - "src/utils/formatting.py"     # Uses shared-utils
+    - "src/utils/validation.py"     # Duplicated logic
+
+# Code review settings
+review:
+  # Security checks
+  security:
+    enabled: true
+    check_hardcoded_secrets: true
+    check_sql_injection: true
+    check_missing_auth: true
+    auth_required_endpoints:
+      - "POST /api/payments/charge"   # Currently missing auth!
+      - "POST /api/payments/refund"
+    secret_patterns:
+      - "API_KEY"
+      - "SECRET"
+      - "PASSWORD"
+      - "TOKEN"
+      - "sk_live_"
+      - "sk_test_"
+    
+  # Architecture checks
+  architecture:
+    enabled: true
+    check_service_boundaries: true
+    check_coupling: true
+    
+  # Code quality checks
+  quality:
+    enabled: true
+    check_duplicated_logic: true
+    check_inconsistent_patterns: true
+    check_flaky_tests: true
+    flaky_test_patterns:
+      - "time.sleep"
+      - "httpbin.org"
+      - "requests.get.*external"
+
+  # Breaking change detection
+  breaking_changes:
+    enabled: true
+    check_api_response_format: true
+    check_function_signatures: true
+
+# Duplication detection across repos
+duplication:
+  enabled: true
+  cross_repo: true
+  threshold: 0.8
+  tracked_functions:
+    - validate_order_total
+    - validate_currency
+    - format_currency
+  report_locations:
+    - shared-utils/src/index.ts
+    - orders-service/src/utils/validation.js
+    - orders-service/src/utils/formatting.js
+
+# Test quality checks
+test_quality:
+  enabled: true
+  check_flaky_tests: true
+  flaky_indicators:
+    - pattern: "time.sleep\\(\\d+\\)"
+      message: "Avoid time.sleep in tests - makes tests slow and flaky"
+      severity: warning
+    - pattern: "httpbin.org|external.*api"
+      message: "Avoid real network calls in tests - use mocks instead"
+      severity: warning
+    - pattern: "datetime.now\\(\\)|time.time\\(\\)"
+      message: "Time-dependent tests can be flaky - consider freezing time"
+      severity: info
+
+# PR size limits
+pr_limits:
+  max_files_changed: 15
+  max_lines_changed: 400
+  warn_on_mixed_changes: true
+
+# Custom review rules
+custom_rules:
+  - id: require-auth-decorator
+    description: "Payment endpoints must have authorization"
+    pattern: "@router\\.(post|put|patch|delete).*charge|refund"
+    negative_pattern: "authorization.*Header|Depends.*auth"
+    severity: error
+    message: "Payment endpoint missing authorization check"
+    files:
+      - "src/routes/payments.py"
+      
+  - id: use-shared-utils
+    description: "Use shared-utils instead of local implementation"
+    pattern: "def validate_order_total|def format_currency"
+    severity: error
+    message: "This function exists in shared-utils. Import from there instead."
+    
+  - id: no-flaky-tests
+    description: "Avoid patterns that cause flaky tests"
+    pattern: "time\\.sleep|httpbin\\.org"
+    severity: warning
+    files:
+      - "tests/**/*.py"
+    message: "This pattern can cause flaky tests. Use mocks instead."
+
+  - id: consistent-error-format
+    description: "Use consistent error response format"
+    pattern: "HTTPException.*detail="
+    severity: info
+    message: "Ensure error format matches API contract"
+
+# API contract validation
+api_contracts:
+  validate_on_pr: true
+  schema_location: "./contracts/"
+  
+  endpoints:
+    - path: /api/payments/charge
+      method: POST
+      auth:
+        required: true  # VIOLATION: Current code doesn't check auth
+        type: bearer
+      request:
+        content_type: application/json
+        required_fields:
+          - order_id
+          - amount
+          - customer_id
+      response:
+        success_code: 200
+        required_fields:
+          - id
+          - status
+
+# Notifications
+notifications:
+  breaking_changes:
+    notify_repos:
+      - Shiw2807/orders-service
+    channels:
+      - github_comment
+      
+  security_issues:
+    severity_threshold: medium
+    channels:
+      - github_comment
+
+  auth_missing:
+    severity: critical
+    message: "Endpoint lacks authorization - security vulnerability"
